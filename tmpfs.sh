@@ -1,0 +1,429 @@
+#!/bin/bash
+# MCSR TMPFS manager. Symlink worlds into RAM for faster resets - Canalso fix terrain loading or TPS issues.
+set -euo pipefail
+
+# -- Edit these --
+TMPFS_TARGET="/tmp"
+TMPFS_SIZE="4g"
+MC_DIR="/tmp/mc"
+INSTANCE_DIR="$HOME/.local/share/PrismLauncher/instances" # change if using a different launcher like MCSR Launcher
+INSTANCES=()               # leave empty to pick interactively
+PRACTICE_MAPS_DIR="$HOME/.config/speedrun/maps" # where all you practice maps will be symlinked to. change this dir to wherever you are going to store your practice maps.
+PRACTICE_MAPS=()           # leave empty to pick interactively
+ADW_KEEP=6                 # worlds to keep (min 5 for speedrun.com verification, reccomened to do more)
+ADW_INTERVAL=300           # seconds between cleanup runs
+ADW_IGNORE_PREFIX="Z"      # worlds starting with this are never deleted
+SYSTEMD_SCOPE="system"     # "system" (needs root) or "user" (no root)
+# -----------------
+
+SCRIPTS="$HOME/.local/share/tmpfs-mc/scripts"
+
+confirm() { echo -n "$1 [y/N] "; read -r a; [[ "$a" =~ ^[Yy]$ ]]; }
+
+saves_path() {
+    local base="$INSTANCE_DIR/$1"
+    if [ -d "$base/.minecraft/saves" ] || [ -L "$base/.minecraft/saves" ]; then
+        echo "$base/.minecraft/saves"
+    else
+        echo "$base/minecraft/saves"
+    fi
+}
+
+# Parse selection like "1-3, 5, 7" into indices
+PICKED=()
+pick() {
+    local header="$1"; shift
+    local items=("$@")
+    PICKED=()
+
+    [ ${#items[@]} -eq 0 ] && { echo "Nothing found."; return 1; }
+
+    echo "$header"
+    for ((i=0; i<${#items[@]}; i++)); do
+        echo "  $((i+1)). ${items[$i]}"
+    done
+    echo -n "Select (e.g. 1-3, 5 or press ENTER for all): "
+    read -r sel
+    sel="${sel:-all}"
+
+    if [ "$sel" = "all" ]; then
+        PICKED=("${items[@]}")
+        return 0
+    fi
+
+    IFS=',' read -ra parts <<< "$sel"
+    for part in "${parts[@]}"; do
+        part="$(echo "$part" | tr -d ' ')"
+        if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            for ((n=${BASH_REMATCH[1]}; n<=${BASH_REMATCH[2]}; n++)); do
+                [ "$n" -ge 1 ] && [ "$n" -le ${#items[@]} ] && PICKED+=("${items[$((n-1))]}")
+            done
+        elif [[ "$part" =~ ^[0-9]+$ ]]; then
+            [ "$part" -ge 1 ] && [ "$part" -le ${#items[@]} ] && PICKED+=("${items[$((part-1))]}")
+        fi
+    done
+    [ ${#PICKED[@]} -eq 0 ] && { echo "No valid selection."; return 1; }
+}
+
+detect_instances() {
+    [ ${#INSTANCES[@]} -gt 0 ] && return 0
+    local found=()
+    while IFS= read -r d; do
+        found+=("$(basename "$d")")
+    done < <(find "$INSTANCE_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+    pick "Instances:" "${found[@]}" || return 1
+    INSTANCES=("${PICKED[@]}")
+}
+
+detect_maps() {
+    [ ${#PRACTICE_MAPS[@]} -gt 0 ] && return 0
+    [ -d "$PRACTICE_MAPS_DIR" ] || return 0
+    local found=()
+    while IFS= read -r d; do
+        found+=("$(basename "$d")")
+    done < <(find "$PRACTICE_MAPS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+    [ ${#found[@]} -eq 0 ] && return 0
+    pick "Practice maps:" "${found[@]}" || return 1
+    PRACTICE_MAPS=("${PICKED[@]}")
+}
+
+prefix_maps() {
+    [ -d "$PRACTICE_MAPS_DIR" ] || return 0
+    for ((i=0; i<${#PRACTICE_MAPS[@]}; i++)); do
+        local map="${PRACTICE_MAPS[$i]}"
+        if [[ "$map" != Z* ]] && [ -e "$PRACTICE_MAPS_DIR/$map" ]; then
+            local new="Z_$map"
+            mv "$PRACTICE_MAPS_DIR/$map" "$PRACTICE_MAPS_DIR/$new"
+            PRACTICE_MAPS[$i]="$new"
+            echo "Renamed: $map -> $new"
+        fi
+    done
+}
+
+# -- enable / disable --
+cmd_enable() {
+    local fstab_line="tmpfs ${TMPFS_TARGET} tmpfs defaults,size=${TMPFS_SIZE} 0 0"
+
+    if ! grep -qF "tmpfs ${TMPFS_TARGET} tmpfs" /etc/fstab 2>/dev/null; then
+        echo "Adding fstab entry for $TMPFS_TARGET ($TMPFS_SIZE)"
+        sudo bash -c "printf '\\n# MCSR tmpfs\\n${fstab_line}\\n' >> /etc/fstab"
+    fi
+
+    if ! mountpoint -q "$TMPFS_TARGET" 2>/dev/null; then
+        sudo mount -t tmpfs -o "size=${TMPFS_SIZE}" tmpfs "$TMPFS_TARGET"
+        echo "Mounted tmpfs at $TMPFS_TARGET"
+    fi
+
+    mkdir -p "$MC_DIR"
+    cmd_link
+    echo "TMPFS enabled"
+}
+
+cmd_disable() {
+    confirm "Unmount $TMPFS_TARGET and remove fstab entry? Data in tmpfs will be lost." || return 0
+
+    if mountpoint -q "$TMPFS_TARGET" 2>/dev/null; then
+        local ft; ft="$(df -T "$TMPFS_TARGET" --output=fstype | tail -1 | tr -d ' ')"
+        [ "$ft" = "tmpfs" ] && sudo umount "$TMPFS_TARGET"
+    fi
+
+    if grep -qF "tmpfs ${TMPFS_TARGET} tmpfs" /etc/fstab 2>/dev/null; then
+        local esc="${TMPFS_TARGET//\//\\/}"
+        sudo bash -c "sed -i '/# MCSR tmpfs/d' /etc/fstab && sed -i '/tmpfs ${esc} tmpfs/d' /etc/fstab"
+    fi
+    echo "TMPFS disabled"
+}
+
+# -- link & unlink --
+cmd_link() {
+    detect_instances || return 1
+    local idx=1
+    for inst in "${INSTANCES[@]}"; do
+        local mc="$MC_DIR/$idx" saves; saves="$(saves_path "$inst")"
+        [ ! -d "$INSTANCE_DIR/$inst" ] && { echo "Not found: $inst (skip)"; ((idx++)); continue; }
+        mkdir -p "$mc"
+
+        if [ -L "$saves" ]; then
+            [ "$(readlink "$saves")" = "$mc" ] && { ((idx++)); continue; }
+            rm "$saves"
+        elif [ -d "$saves" ]; then
+            confirm "Delete existing saves in $saves?" || { ((idx++)); continue; }
+            rm -rf "$saves"
+        else
+            mkdir -p "$(dirname "$saves")"
+        fi
+
+        ln -s "$mc" "$saves"
+        echo "$idx: $inst -> $mc"
+        ((idx++))
+    done
+    chown "$(logname 2>/dev/null || id -un)" -R "$MC_DIR" 2>/dev/null || true
+    cmd_link_maps
+}
+
+cmd_unlink() {
+    detect_instances || return 1
+    for inst in "${INSTANCES[@]}"; do
+        local saves; saves="$(saves_path "$inst")"
+        [ -L "$saves" ] && { rm "$saves"; mkdir -p "$saves"; echo "Restored: $inst"; }
+    done
+}
+
+cmd_link_maps() {
+    detect_maps || return 0
+    [ ${#PRACTICE_MAPS[@]} -eq 0 ] && return 0
+    prefix_maps
+    local count=${#INSTANCES[@]}
+    for ((k=1; k<=count; k++)); do
+        mkdir -p "$MC_DIR/$k"
+        for map in "${PRACTICE_MAPS[@]}"; do
+            [ ! -e "$PRACTICE_MAPS_DIR/$map" ] && { echo "Map not found: $map"; continue; }
+            ln -sf "$PRACTICE_MAPS_DIR/$map" "$MC_DIR/$k/"
+        done
+    done
+    echo "Practice maps linked"
+}
+
+cmd_unlink_maps() {
+    detect_maps || return 0
+    local count=${#INSTANCES[@]}
+    for ((k=1; k<=count; k++)); do
+        for map in "${PRACTICE_MAPS[@]}"; do
+            [ -L "$MC_DIR/$k/$map" ] && rm "$MC_DIR/$k/$map"
+        done
+    done
+    echo "Practice maps unlinked"
+}
+
+# -- ADW -- 
+cmd_adw_install() {
+    detect_instances || return 1
+    local count=${#INSTANCES[@]}
+    mkdir -p "$SCRIPTS"
+
+    cat > "$SCRIPTS/adw-cleanup.sh" << SCRIPT
+#!/bin/bash
+set -euo pipefail
+for i in \$(seq 1 $count); do
+    D="$MC_DIR/\$i"; [ -d "\$D" ] || continue
+    while IFS= read -r s; do rm -rf "\$D/\$s"
+    done < <(ls "\$D" -t1 2>/dev/null | grep -v "^$ADW_IGNORE_PREFIX" | tail -n "+$((ADW_KEEP + 1))")
+done
+SCRIPT
+    chmod +x "$SCRIPTS/adw-cleanup.sh"
+
+    local svc="[Unit]
+Description=MCSR ADW cleanup
+[Service]
+Type=oneshot
+ExecStart=$SCRIPTS/adw-cleanup.sh"
+
+    local tmr="[Unit]
+Description=MCSR ADW timer
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=${ADW_INTERVAL}s
+AccuracySec=5s
+[Install]
+WantedBy=timers.target"
+
+    if [ "$SYSTEMD_SCOPE" = "user" ]; then
+        mkdir -p "$HOME/.config/systemd/user"
+        echo "$svc" > "$HOME/.config/systemd/user/mc-tmpfs-adw.service"
+        echo "$tmr" > "$HOME/.config/systemd/user/mc-tmpfs-adw.timer"
+        systemctl --user daemon-reload
+        systemctl --user enable --now mc-tmpfs-adw.timer
+    else
+        local u; u="$(logname 2>/dev/null || id -un)"
+        svc="[Unit]
+Description=MCSR ADW cleanup
+[Service]
+Type=oneshot
+User=$u
+ExecStart=$SCRIPTS/adw-cleanup.sh"
+        local ts tt; ts="$(mktemp)"; tt="$(mktemp)"
+        echo "$svc" > "$ts"; echo "$tmr" > "$tt"
+        sudo bash -c "cp '$ts' /etc/systemd/system/mc-tmpfs-adw.service && cp '$tt' /etc/systemd/system/mc-tmpfs-adw.timer && rm '$ts' '$tt' && systemctl daemon-reload && systemctl enable --now mc-tmpfs-adw.timer"
+    fi
+    echo "ADW timer installed (every ${ADW_INTERVAL}s, keep $ADW_KEEP, ignore ${ADW_IGNORE_PREFIX}*)"
+}
+
+cmd_adw_remove() {
+    if [ "$SYSTEMD_SCOPE" = "user" ]; then
+        systemctl --user disable --now mc-tmpfs-adw.timer 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user"/mc-tmpfs-adw.{service,timer}
+        systemctl --user daemon-reload
+    else
+        sudo bash -c "systemctl disable --now mc-tmpfs-adw.timer 2>/dev/null; rm -f /etc/systemd/system/mc-tmpfs-adw.{service,timer}; systemctl daemon-reload" || true
+    fi
+    echo "ADW timer removed"
+}
+
+cmd_adw_run() {
+    [ -x "$SCRIPTS/adw-cleanup.sh" ] || { echo "Run adw-install first"; return 1; }
+    bash "$SCRIPTS/adw-cleanup.sh"
+    echo "Cleanup done"
+}
+
+# -- startup service --
+cmd_service_install() {
+    detect_instances || return 1
+    detect_maps || true
+    local count=${#INSTANCES[@]}
+    mkdir -p "$SCRIPTS"
+
+    local u; u="$(logname 2>/dev/null || id -un)"
+    {
+        echo '#!/bin/bash'
+        echo 'set -e'
+        echo "for k in \$(seq 1 $count); do"
+        echo "  mkdir -p \"$MC_DIR/\$k\""
+        for map in "${PRACTICE_MAPS[@]}"; do
+            echo "  ln -sf \"$PRACTICE_MAPS_DIR/$map\" \"$MC_DIR/\$k/\""
+        done
+        echo "done"
+        echo "chown $u -R \"$MC_DIR\" 2>/dev/null || true"
+    } > "$SCRIPTS/mc-startup.sh"
+    chmod +x "$SCRIPTS/mc-startup.sh"
+
+    if [ "$SYSTEMD_SCOPE" = "user" ]; then
+        mkdir -p "$HOME/.config/systemd/user"
+        cat > "$HOME/.config/systemd/user/mc-tmpfs-startup.service" << EOF
+[Unit]
+Description=MCSR TMPFS startup
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=$SCRIPTS/mc-startup.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload
+        systemctl --user enable --now mc-tmpfs-startup.service
+    else
+        local svc="[Unit]
+Description=MCSR TMPFS startup
+After=multi-user.target
+[Service]
+Type=oneshot
+User=$u
+ExecStart=$SCRIPTS/mc-startup.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target"
+        local ts; ts="$(mktemp)"; echo "$svc" > "$ts"
+        sudo bash -c "cp '$ts' /etc/systemd/system/mc-tmpfs-startup.service && rm '$ts' && systemctl daemon-reload && systemctl enable --now mc-tmpfs-startup.service"
+    fi
+    echo "Startup service installed"
+}
+
+cmd_service_remove() {
+    if [ "$SYSTEMD_SCOPE" = "user" ]; then
+        systemctl --user disable --now mc-tmpfs-startup.service 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/mc-tmpfs-startup.service"
+        systemctl --user daemon-reload
+    else
+        sudo bash -c "systemctl disable --now mc-tmpfs-startup.service 2>/dev/null; rm -f /etc/systemd/system/mc-tmpfs-startup.service; systemctl daemon-reload" || true
+    fi
+    echo "Startup service removed"
+}
+
+# -- status --
+cmd_status() {
+    detect_instances || return 1
+
+    echo "=== TMPFS ==="
+    if mountpoint -q "$TMPFS_TARGET" 2>/dev/null; then
+        local ft used total
+        ft="$(df -T "$TMPFS_TARGET" --output=fstype | tail -1 | tr -d ' ')"
+        used="$(df -h "$TMPFS_TARGET" --output=used | tail -1 | tr -d ' ')"
+        total="$(df -h "$TMPFS_TARGET" --output=size | tail -1 | tr -d ' ')"
+        echo "  $TMPFS_TARGET: $ft ($used/$total used)"
+    else
+        echo "  $TMPFS_TARGET: not mounted"
+    fi
+    grep -qF "tmpfs ${TMPFS_TARGET} tmpfs" /etc/fstab 2>/dev/null \
+        && echo "  fstab: yes" || echo "  fstab: no"
+    echo "  MC dir: $MC_DIR"
+
+    echo "=== Instances (${#INSTANCES[@]}) ==="
+    local idx=1
+    for inst in "${INSTANCES[@]}"; do
+        local saves; saves="$(saves_path "$inst")"
+        if [ -L "$saves" ]; then
+            local t wc=0; t="$(readlink "$saves")"
+            [ -d "$t" ] && wc="$(find "$t" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)"
+            echo "  $idx. $inst -> $t ($wc worlds)"
+        else
+            echo "  $idx. $inst (not linked)"
+        fi
+        ((idx++))
+    done
+
+    echo "=== Practice maps (${#PRACTICE_MAPS[@]}) ==="
+    for map in "${PRACTICE_MAPS[@]}"; do
+        [ -e "$PRACTICE_MAPS_DIR/$map" ] && echo "  $map" || echo "  $map (not found)"
+    done
+
+    echo "=== Services ==="
+    local sf=""; [ "$SYSTEMD_SCOPE" = "user" ] && sf="--user"
+    systemctl $sf is-active mc-tmpfs-adw.timer &>/dev/null \
+        && echo "  ADW: active (${ADW_INTERVAL}s, keep $ADW_KEEP)" || echo "  ADW: inactive"
+    systemctl $sf is-enabled mc-tmpfs-startup.service &>/dev/null \
+        && echo "  Startup: enabled" || echo "  Startup: not installed"
+}
+
+# -- composite --
+cmd_setup() {
+    confirm "Enable tmpfs, link instances, install ADW + startup service?" || return 0
+    cmd_enable; cmd_adw_install; cmd_service_install
+    echo ""; cmd_status
+}
+
+cmd_teardown() {
+    confirm "Remove everything (unlink, remove services, disable tmpfs)?" || return 0
+    cmd_adw_remove; cmd_service_remove; cmd_unlink 2>/dev/null || true; cmd_disable
+}
+
+# -- main --
+usage() {
+    cat << EOF
+tmpfs.sh - MCSR TMPFS manager
+
+Usage: $0 <command>
+
+  setup / teardown    Full setup or full teardown
+  enable / disable    Mount/unmount tmpfs, manage fstab
+  link / unlink       Symlink/restore instance saves dirs
+  link-maps           Link practice maps into tmpfs dirs
+  unlink-maps         Remove practice map symlinks
+  adw-install         Install systemd world cleanup timer
+  adw-remove          Remove cleanup timer
+  adw-run             Run cleanup once now
+  service-install     Install boot-time dir creation service
+  service-remove      Remove startup service
+  status              Show current state
+
+Instances and maps are picked interactively, or set them at the top of this script.
+EOF
+}
+
+case "${1:-}" in
+    enable)          cmd_enable ;;
+    disable)         cmd_disable ;;
+    link)            cmd_link ;;
+    unlink)          cmd_unlink ;;
+    link-maps)       cmd_link_maps ;;
+    unlink-maps)     cmd_unlink_maps ;;
+    adw-install)     cmd_adw_install ;;
+    adw-remove)      cmd_adw_remove ;;
+    adw-run)         cmd_adw_run ;;
+    service-install) cmd_service_install ;;
+    service-remove)  cmd_service_remove ;;
+    status)          cmd_status ;;
+    setup)           cmd_setup ;;
+    teardown)        cmd_teardown ;;
+    help|--help|-h)  usage ;;
+    *)               usage; exit 1 ;;
+esac
