@@ -4,8 +4,11 @@ Two scripts used to either set up TMPFS, or set up symlinked practice maps for M
 
 - **tmpfs.sh** - Symlink instance saves into a tmpfs RAM disk for faster resets
 - **symlink.sh** - Symlink practice maps into instance saves folders (no tmpfs needed)
-
+> [!NOTE]
 > Only use tmpfs.sh if you have RAM to spare while resetting (not at 70-80%+ usage).
+
+> [!WARNING]
+> # A.7.8.a) If SeedQueue is used and 5 previous world files must be sent, all world files generated after the run must also be submitted. 
 
 ## Download
 

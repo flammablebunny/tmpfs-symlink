@@ -1,20 +1,26 @@
 #!/bin/bash
-# MCSR TMPFS manager. Symlink worlds into RAM for faster resets - Canalso fix terrain loading or TPS issues.
+# MCSR TMPFS manager. Symlink worlds into RAM for faster resets - Can also fix terrain loading or TPS issues.
 set -euo pipefail
 
-# -- Edit these --
+# -- Script Variables. (reccomened to keep as default, feel free to edit) --
 TMPFS_TARGET="/tmp"
 TMPFS_SIZE="4g"
 MC_DIR="/tmp/mc"
-INSTANCE_DIR="$HOME/.local/share/PrismLauncher/instances" # change if using a different launcher like MCSR Launcher
-INSTANCES=()               # leave empty to pick interactively
-PRACTICE_MAPS_DIR="$HOME/.config/speedrun/maps" # where all you practice maps will be symlinked to. change this dir to wherever you are going to store your practice maps.
-PRACTICE_MAPS=()           # leave empty to pick interactively
-ADW_KEEP=6                 # worlds to keep (min 5 for speedrun.com verification, reccomened to do more)
+INSTANCE_DIR="$HOME/.local/share/PrismLauncher/instances"   # change if using a different launcher like MCSR Launcher
+INSTANCES=()                                                # leave empty to pick interactively
+PRACTICE_MAPS_DIR="$HOME/.config/speedrun/maps"             # where all you practice maps will be symlinked to. change this dir to wherever you are going to store your practice maps.
+PRACTICE_MAPS=()                                            # leave empty to pick interactively
 ADW_INTERVAL=300           # seconds between cleanup runs
 ADW_IGNORE_PREFIX="Z"      # worlds starting with this are never deleted
 SYSTEMD_SCOPE="system"     # "system" (needs root) or "user" (no root)
 # -----------------
+
+# ONLY EDIT THIS IF YOU PROPERLY UNDERSTAND HOW TMPFS WORKS. INCREASE IF WANTED, IT IS NOT RECCOMENED TO DECREASE THIS. 
+
+ADW_KEEP=1000                                               # worlds to keep (reccomened to do atleast 1000 or more)
+
+# A.7.8.a) If SeedQueue is used and 5 previous world files must be sent, all world files generated after the run must also be submitted.
+
 
 SCRIPTS="$HOME/.local/share/tmpfs-mc/scripts"
 
