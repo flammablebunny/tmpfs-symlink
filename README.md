@@ -10,6 +10,9 @@ Two scripts used to either set up TMPFS, or set up symlinked practice maps for M
 > [!WARNING]
 > # A.7.8.a) If SeedQueue is used and 5 previous world files must be sent, all world files generated after the run must also be submitted. 
 
+> [!NOTE]
+> If you are on Nixos, instead check out an example setup of TMPFS from [my flake](https://github.com/flammablebunny/flake/blob/8f3dbf4ce35629ca68bfb43210b8eadb7fd3790e/hosts/pc/default.nix#L127)
+
 ## Download
 
 ```bash
