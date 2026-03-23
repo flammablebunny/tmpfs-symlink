@@ -29,7 +29,7 @@ pick() {
     local items=("$@")
     PICKED=()
 
-    [ ${#items[@]} -eq 0 ] && { echo "Nothing found."; return 1; }
+    if [ ${#items[@]} -eq 0 ]; then echo "Nothing found."; return 1; fi
 
     echo "$header"
     for ((i=0; i<${#items[@]}; i++)); do
@@ -64,7 +64,7 @@ pick() {
 }
 
 detect_instances() {
-    [ ${#INSTANCES[@]} -gt 0 ] && return 0
+    if [ ${#INSTANCES[@]} -gt 0 ]; then return 0; fi
     local found=()
     while IFS= read -r d; do
         found+=("$(basename "$d")")
@@ -74,8 +74,8 @@ detect_instances() {
 }
 
 detect_maps() {
-    [ ${#PRACTICE_MAPS[@]} -gt 0 ] && return 0
-    [ -d "$PRACTICE_MAPS_DIR" ] || { echo "Maps directory not found: $PRACTICE_MAPS_DIR"; return 1; }
+    if [ ${#PRACTICE_MAPS[@]} -gt 0 ]; then return 0; fi
+    if [ ! -d "$PRACTICE_MAPS_DIR" ]; then echo "Maps directory not found: $PRACTICE_MAPS_DIR"; return 1; fi
     local found=()
     while IFS= read -r d; do
         found+=("$(basename "$d")")
@@ -85,7 +85,7 @@ detect_maps() {
 }
 
 prefix_maps() {
-    [ -d "$PRACTICE_MAPS_DIR" ] || return 0
+    if [ ! -d "$PRACTICE_MAPS_DIR" ]; then return 0; fi
     for ((i=0; i<${#PRACTICE_MAPS[@]}; i++)); do
         local map="${PRACTICE_MAPS[$i]}"
         if [[ "$map" != Z* ]] && [ -e "$PRACTICE_MAPS_DIR/$map" ]; then
@@ -103,12 +103,12 @@ cmd_link() {
     prefix_maps
 
     for inst in "${INSTANCES[@]}"; do
-        [ ! -d "$INSTANCE_DIR/$inst" ] && { echo "Instance not found: $inst (skip)"; continue; }
+        if [ ! -d "$INSTANCE_DIR/$inst" ]; then echo "Instance not found: $inst (skip)"; continue; fi
         local saves; saves="$(saves_path "$inst")"
         mkdir -p "$saves"
 
         for map in "${PRACTICE_MAPS[@]}"; do
-            [ ! -e "$PRACTICE_MAPS_DIR/$map" ] && continue
+            if [ ! -e "$PRACTICE_MAPS_DIR/$map" ]; then continue; fi
             ln -sf "$PRACTICE_MAPS_DIR/$map" "$saves/"
         done
         echo "$inst: linked ${#PRACTICE_MAPS[@]} map(s)"
@@ -122,7 +122,7 @@ cmd_unlink() {
     for inst in "${INSTANCES[@]}"; do
         local saves; saves="$(saves_path "$inst")"
         for map in "${PRACTICE_MAPS[@]}"; do
-            [ -L "$saves/$map" ] && rm "$saves/$map"
+            if [ -L "$saves/$map" ]; then rm "$saves/$map"; fi
         done
         echo "$inst: unlinked"
     done
@@ -135,14 +135,14 @@ cmd_status() {
     echo "Maps dir: $PRACTICE_MAPS_DIR"
     echo "Maps (${#PRACTICE_MAPS[@]}):"
     for map in "${PRACTICE_MAPS[@]}"; do
-        [ -e "$PRACTICE_MAPS_DIR/$map" ] && echo "  $map" || echo "  $map (not found)"
+        if [ -e "$PRACTICE_MAPS_DIR/$map" ]; then echo "  $map"; else echo "  $map (not found)"; fi
     done
     echo "Instances (${#INSTANCES[@]}):"
     for inst in "${INSTANCES[@]}"; do
         local saves; saves="$(saves_path "$inst")"
         local linked=0
         for map in "${PRACTICE_MAPS[@]}"; do
-            [ -L "$saves/$map" ] && ((linked++))
+            if [ -L "$saves/$map" ]; then ((linked++)) || true; fi
         done
         echo "  $inst: $linked/${#PRACTICE_MAPS[@]} maps linked"
     done

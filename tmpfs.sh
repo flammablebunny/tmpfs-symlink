@@ -15,7 +15,7 @@ ADW_IGNORE_PREFIX="Z"      # worlds starting with this are never deleted
 SYSTEMD_SCOPE="system"     # "system" (needs root) or "user" (no root)
 # -----------------
 
-# ONLY EDIT THIS IF YOU PROPERLY UNDERSTAND HOW TMPFS WORKS. INCREASE IF WANTED, IT IS NOT RECCOMENED TO DECREASE THIS. 
+# ONLY EDIT THIS IF YOU PROPERLY UNDERSTAND HOW TMPFS WORKS. INCREASE IF WANTED, IT IS NOT RECCOMENED TO DECREASE THIS.
 
 ADW_KEEP=1000                                               # worlds to keep (reccomened to do atleast 1000 or more)
 
@@ -42,7 +42,7 @@ pick() {
     local items=("$@")
     PICKED=()
 
-    [ ${#items[@]} -eq 0 ] && { echo "Nothing found."; return 1; }
+    if [ ${#items[@]} -eq 0 ]; then echo "Nothing found."; return 1; fi
 
     echo "$header"
     for ((i=0; i<${#items[@]}; i++)); do
@@ -76,7 +76,7 @@ pick() {
 }
 
 detect_instances() {
-    [ ${#INSTANCES[@]} -gt 0 ] && return 0
+    if [ ${#INSTANCES[@]} -gt 0 ]; then return 0; fi
     local found=()
     while IFS= read -r d; do
         found+=("$(basename "$d")")
@@ -86,19 +86,19 @@ detect_instances() {
 }
 
 detect_maps() {
-    [ ${#PRACTICE_MAPS[@]} -gt 0 ] && return 0
-    [ -d "$PRACTICE_MAPS_DIR" ] || return 0
+    if [ ${#PRACTICE_MAPS[@]} -gt 0 ]; then return 0; fi
+    if [ ! -d "$PRACTICE_MAPS_DIR" ]; then return 0; fi
     local found=()
     while IFS= read -r d; do
         found+=("$(basename "$d")")
     done < <(find "$PRACTICE_MAPS_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
-    [ ${#found[@]} -eq 0 ] && return 0
+    if [ ${#found[@]} -eq 0 ]; then return 0; fi
     pick "Practice maps:" "${found[@]}" || return 1
     PRACTICE_MAPS=("${PICKED[@]}")
 }
 
 prefix_maps() {
-    [ -d "$PRACTICE_MAPS_DIR" ] || return 0
+    if [ ! -d "$PRACTICE_MAPS_DIR" ]; then return 0; fi
     for ((i=0; i<${#PRACTICE_MAPS[@]}; i++)); do
         local map="${PRACTICE_MAPS[$i]}"
         if [[ "$map" != Z* ]] && [ -e "$PRACTICE_MAPS_DIR/$map" ]; then
@@ -133,8 +133,8 @@ cmd_disable() {
     confirm "Unmount $TMPFS_TARGET and remove fstab entry? Data in tmpfs will be lost." || return 0
 
     if mountpoint -q "$TMPFS_TARGET" 2>/dev/null; then
-        local ft; ft="$(df -T "$TMPFS_TARGET" --output=fstype | tail -1 | tr -d ' ')"
-        [ "$ft" = "tmpfs" ] && sudo umount "$TMPFS_TARGET"
+        local ft; ft="$(df -T "$TMPFS_TARGET" | tail -1 | awk '{print $2}')"
+        if [ "$ft" = "tmpfs" ]; then sudo umount "$TMPFS_TARGET"; fi
     fi
 
     if grep -qF "tmpfs ${TMPFS_TARGET} tmpfs" /etc/fstab 2>/dev/null; then
@@ -150,14 +150,14 @@ cmd_link() {
     local idx=1
     for inst in "${INSTANCES[@]}"; do
         local mc="$MC_DIR/$idx" saves; saves="$(saves_path "$inst")"
-        [ ! -d "$INSTANCE_DIR/$inst" ] && { echo "Not found: $inst (skip)"; ((idx++)); continue; }
+        if [ ! -d "$INSTANCE_DIR/$inst" ]; then echo "Not found: $inst (skip)"; ((idx++)) || true; continue; fi
         mkdir -p "$mc"
 
         if [ -L "$saves" ]; then
-            [ "$(readlink "$saves")" = "$mc" ] && { ((idx++)); continue; }
+            if [ "$(readlink "$saves")" = "$mc" ]; then ((idx++)) || true; continue; fi
             rm "$saves"
         elif [ -d "$saves" ]; then
-            confirm "Delete existing saves in $saves?" || { ((idx++)); continue; }
+            confirm "Delete existing saves in $saves?" || { ((idx++)) || true; continue; }
             rm -rf "$saves"
         else
             mkdir -p "$(dirname "$saves")"
@@ -165,7 +165,7 @@ cmd_link() {
 
         ln -s "$mc" "$saves"
         echo "$idx: $inst -> $mc"
-        ((idx++))
+        ((idx++)) || true
     done
     chown "$(logname 2>/dev/null || id -un)" -R "$MC_DIR" 2>/dev/null || true
     cmd_link_maps
@@ -175,19 +175,19 @@ cmd_unlink() {
     detect_instances || return 1
     for inst in "${INSTANCES[@]}"; do
         local saves; saves="$(saves_path "$inst")"
-        [ -L "$saves" ] && { rm "$saves"; mkdir -p "$saves"; echo "Restored: $inst"; }
+        if [ -L "$saves" ]; then rm "$saves"; mkdir -p "$saves"; echo "Restored: $inst"; fi
     done
 }
 
 cmd_link_maps() {
     detect_maps || return 0
-    [ ${#PRACTICE_MAPS[@]} -eq 0 ] && return 0
+    if [ ${#PRACTICE_MAPS[@]} -eq 0 ]; then return 0; fi
     prefix_maps
     local count=${#INSTANCES[@]}
     for ((k=1; k<=count; k++)); do
         mkdir -p "$MC_DIR/$k"
         for map in "${PRACTICE_MAPS[@]}"; do
-            [ ! -e "$PRACTICE_MAPS_DIR/$map" ] && { echo "Map not found: $map"; continue; }
+            if [ ! -e "$PRACTICE_MAPS_DIR/$map" ]; then echo "Map not found: $map"; continue; fi
             ln -sf "$PRACTICE_MAPS_DIR/$map" "$MC_DIR/$k/"
         done
     done
@@ -199,13 +199,13 @@ cmd_unlink_maps() {
     local count=${#INSTANCES[@]}
     for ((k=1; k<=count; k++)); do
         for map in "${PRACTICE_MAPS[@]}"; do
-            [ -L "$MC_DIR/$k/$map" ] && rm "$MC_DIR/$k/$map"
+            if [ -L "$MC_DIR/$k/$map" ]; then rm "$MC_DIR/$k/$map"; fi
         done
     done
     echo "Practice maps unlinked"
 }
 
-# -- ADW -- 
+# -- ADW --
 cmd_adw_install() {
     detect_instances || return 1
     local count=${#INSTANCES[@]}
@@ -270,7 +270,7 @@ cmd_adw_remove() {
 }
 
 cmd_adw_run() {
-    [ -x "$SCRIPTS/adw-cleanup.sh" ] || { echo "Run adw-install first"; return 1; }
+    if [ ! -x "$SCRIPTS/adw-cleanup.sh" ]; then echo "Run adw-install first"; return 1; fi
     bash "$SCRIPTS/adw-cleanup.sh"
     echo "Cleanup done"
 }
@@ -341,20 +341,28 @@ cmd_service_remove() {
 
 # -- status --
 cmd_status() {
-    detect_instances || return 1
+    # Auto-detect all instances without prompting
+    if [ ${#INSTANCES[@]} -eq 0 ] && [ -d "$INSTANCE_DIR" ]; then
+        while IFS= read -r d; do
+            INSTANCES+=("$(basename "$d")")
+        done < <(find "$INSTANCE_DIR" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | sort)
+    fi
 
     echo "=== TMPFS ==="
     if mountpoint -q "$TMPFS_TARGET" 2>/dev/null; then
         local ft used total
-        ft="$(df -T "$TMPFS_TARGET" --output=fstype | tail -1 | tr -d ' ')"
-        used="$(df -h "$TMPFS_TARGET" --output=used | tail -1 | tr -d ' ')"
-        total="$(df -h "$TMPFS_TARGET" --output=size | tail -1 | tr -d ' ')"
+        ft="$(df -T "$TMPFS_TARGET" | tail -1 | awk '{print $2}')"
+        used="$(df -h "$TMPFS_TARGET" | tail -1 | awk '{print $3}')"
+        total="$(df -h "$TMPFS_TARGET" | tail -1 | awk '{print $2}')"
         echo "  $TMPFS_TARGET: $ft ($used/$total used)"
     else
         echo "  $TMPFS_TARGET: not mounted"
     fi
-    grep -qF "tmpfs ${TMPFS_TARGET} tmpfs" /etc/fstab 2>/dev/null \
-        && echo "  fstab: yes" || echo "  fstab: no"
+    if grep -qF "tmpfs ${TMPFS_TARGET} tmpfs" /etc/fstab 2>/dev/null; then
+        echo "  fstab: yes"
+    else
+        echo "  fstab: no"
+    fi
     echo "  MC dir: $MC_DIR"
 
     echo "=== Instances (${#INSTANCES[@]}) ==="
@@ -363,25 +371,32 @@ cmd_status() {
         local saves; saves="$(saves_path "$inst")"
         if [ -L "$saves" ]; then
             local t wc=0; t="$(readlink "$saves")"
-            [ -d "$t" ] && wc="$(find "$t" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)"
+            if [ -d "$t" ]; then wc="$(find "$t" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)"; fi
             echo "  $idx. $inst -> $t ($wc worlds)"
         else
             echo "  $idx. $inst (not linked)"
         fi
-        ((idx++))
+        ((idx++)) || true
     done
 
     echo "=== Practice maps (${#PRACTICE_MAPS[@]}) ==="
     for map in "${PRACTICE_MAPS[@]}"; do
-        [ -e "$PRACTICE_MAPS_DIR/$map" ] && echo "  $map" || echo "  $map (not found)"
+        if [ -e "$PRACTICE_MAPS_DIR/$map" ]; then echo "  $map"; else echo "  $map (not found)"; fi
     done
 
     echo "=== Services ==="
-    local sf=""; [ "$SYSTEMD_SCOPE" = "user" ] && sf="--user"
-    systemctl $sf is-active mc-tmpfs-adw.timer &>/dev/null \
-        && echo "  ADW: active (${ADW_INTERVAL}s, keep $ADW_KEEP)" || echo "  ADW: inactive"
-    systemctl $sf is-enabled mc-tmpfs-startup.service &>/dev/null \
-        && echo "  Startup: enabled" || echo "  Startup: not installed"
+    local sf=""
+    if [ "$SYSTEMD_SCOPE" = "user" ]; then sf="--user"; fi
+    if systemctl $sf is-active mc-tmpfs-adw.timer &>/dev/null; then
+        echo "  ADW: active (${ADW_INTERVAL}s, keep $ADW_KEEP)"
+    else
+        echo "  ADW: inactive"
+    fi
+    if systemctl $sf is-enabled mc-tmpfs-startup.service &>/dev/null; then
+        echo "  Startup: enabled"
+    else
+        echo "  Startup: not installed"
+    fi
 }
 
 # -- composite --
