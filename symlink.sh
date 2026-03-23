@@ -50,13 +50,17 @@ pick() {
         part="$(echo "$part" | tr -d ' ')"
         if [[ "$part" =~ ^([0-9]+)-([0-9]+)$ ]]; then
             for ((n=${BASH_REMATCH[1]}; n<=${BASH_REMATCH[2]}; n++)); do
-                [ "$n" -ge 1 ] && [ "$n" -le ${#items[@]} ] && PICKED+=("${items[$((n-1))]}")
+                if [ "$n" -ge 1 ] && [ "$n" -le ${#items[@]} ]; then
+                    PICKED+=("${items[$((n-1))]}")
+                fi
             done
         elif [[ "$part" =~ ^[0-9]+$ ]]; then
-            [ "$part" -ge 1 ] && [ "$part" -le ${#items[@]} ] && PICKED+=("${items[$((part-1))]}")
+            if [ "$part" -ge 1 ] && [ "$part" -le ${#items[@]} ]; then
+                PICKED+=("${items[$((part-1))]}")
+            fi
         fi
     done
-    [ ${#PICKED[@]} -eq 0 ] && { echo "No valid selection."; return 1; }
+    if [ ${#PICKED[@]} -eq 0 ]; then echo "No valid selection."; return 1; fi
 }
 
 detect_instances() {
